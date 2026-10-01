@@ -1,0 +1,6 @@
+dist/
+node_modules/
+.test/
+*.module.scss.d.ts
+tsconfig.tsbuildinfo
+.claude/settings.local.json
