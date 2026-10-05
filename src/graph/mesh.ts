@@ -10,10 +10,11 @@ export type MeshKind = "istio" | "linkerd";
 
 export const MESH_TITLES: Readonly<Record<MeshKind, string>> = { istio: "Istio", linkerd: "Linkerd" };
 
-/** One observed connection, from a workload to a Service. */
+/** One observed connection, from a workload to a Service, or to a host outside the cluster (a ServiceEntry's). */
 export interface ObservedFlow {
   readonly mesh: MeshKind;
   readonly from: { readonly namespace: string; readonly workload: string };
+  /** `service` is a Service's name, or a host with dots in it for what a ServiceEntry declares. */
   readonly to: { readonly namespace: string; readonly service: string };
   /** HTTP and gRPC requests per second. */
   readonly requestsPerSecond: number;
@@ -102,11 +103,6 @@ export const parseMeshSeries = (answers: ReadonlyArray<{ readonly query: MeshQue
       const value = latest(entry);
 
       if (UNKNOWN.has(from.workload) || UNKNOWN.has(to.service) || !from.namespace || !to.namespace || value === 0) {
-        continue;
-      }
-
-      // A Service DNS name outside the cluster's domain is a ServiceEntry host, not a Service.
-      if (to.service.includes(".")) {
         continue;
       }
 

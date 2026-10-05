@@ -121,6 +121,41 @@ const CLASS: KindIcon = [s("M3.5 12.5 L11.5 4.5 H19.5 V12.5 L11.5 20.5 Z"), f("M
 
 const NAMESPACE: KindIcon = [s("M4 4 H20 V20 H4 Z")];
 
+const dot = (cx: number, cy: number, r: number) => f(`M${cx - r} ${cy} a${r} ${r} 0 1 0 ${2 * r} 0 a${r} ${r} 0 1 0 ${-2 * r} 0`);
+
+/** Argo CD Application: a git branch, what it syncs from. */
+const GITOPS_APPLICATION: KindIcon = [s("M7 6 V18"), s("M7 15 C7 10.5 17 12.5 17 8"), dot(7, 5, 2.1), dot(17, 6.6, 2.1), dot(7, 19.2, 2.1)];
+
+/** Flux Kustomization: overlays, one on another. */
+const KUSTOMIZATION: KindIcon = [s("M12 3.5 L20.5 8 L12 12.5 L3.5 8 Z"), s("M6.2 11 L3.5 12.5 L12 17 L20.5 12.5 L17.8 11"), s("M6.2 15.5 L3.5 17 L12 21.5 L20.5 17 L17.8 15.5")];
+
+/** Flux HelmRelease: the helm. */
+const HELM_RELEASE: KindIcon = [
+  s("M6.5 12 a5.5 5.5 0 1 0 11 0 a5.5 5.5 0 1 0 -11 0"),
+  s("M12 2.5 V6.5 M12 17.5 V21.5 M2.5 12 H6.5 M17.5 12 H21.5 M5.3 5.3 L8.1 8.1 M15.9 15.9 L18.7 18.7 M18.7 5.3 L15.9 8.1 M8.1 15.9 L5.3 18.7"),
+];
+
+/** A Flux source: a repository to read from. */
+const SOURCE: KindIcon = [s("M6.5 3.5 H18 V17.5 H8 A1.75 1.75 0 0 0 8 21 H18"), s("M6.5 3.5 V19.2"), s("M10 8 H15")];
+
+/** Istio DestinationRule: the knobs of the traffic to a host. */
+const DESTINATION_RULE: KindIcon = [s("M4 7 H20 M4 12 H20 M4 17 H20"), dot(9, 7, 2.2), dot(15.5, 12, 2.2), dot(10.5, 17, 2.2)];
+
+/** Istio ServiceEntry: a way out of the mesh. */
+const SERVICE_ENTRY: KindIcon = [s("M13.5 3.5 H20.5 V10.5"), s("M20.5 3.5 L11 13"), s("M17.5 14 V20.5 H3.5 V6.5 H10")];
+
+/** Admission webhooks: the API server calls out to a hook. */
+const WEBHOOK: KindIcon = [s("M14.5 5.5 V14.5 A4.5 4.5 0 0 1 5.5 14.5 V12.5"), s("M3.2 14.6 L5.5 12 L7.8 14.6"), dot(14.5, 4, 2.2)];
+
+/** APIService: a plug into the API. */
+const API_SERVICE: KindIcon = [s("M8.5 3 V8 M15.5 3 V8"), s("M5.5 8 H18.5 V11.5 A6.5 6.5 0 0 1 5.5 11.5 Z"), s("M12 18 V21.5")];
+
+/** Devices claimed through dynamic resource allocation: a chip. */
+const DEVICE_CLAIM: KindIcon = [s("M7 7 H17 V17 H7 Z"), s("M10 10 H14 V14 H10 Z"), s("M10 3.5 V7 M14 3.5 V7 M10 17 V20.5 M14 17 V20.5 M3.5 10 H7 M3.5 14 H7 M17 10 H20.5 M17 14 H20.5")];
+
+/** Any other custom resource: braces, as in its manifest. */
+const CUSTOM_RESOURCE: KindIcon = [s("M9 4 C6 4 7.5 10.5 4.5 12 C7.5 13.5 6 20 9 20"), s("M15 4 C18 4 16.5 10.5 19.5 12 C16.5 13.5 18 20 15 20"), dot(12, 12, 1.6)];
+
 const INTERNET: KindIcon = [s("M3 12 a9 9 0 1 0 18 0 a9 9 0 1 0 -18 0"), s("M3 12 H21"), s("M12 3 C8.5 6.5 8.5 17.5 12 21 C15.5 17.5 15.5 6.5 12 3")];
 
 const UNKNOWN: KindIcon = [s("M9.2 9.2 A2.8 2.8 0 1 1 13 11.8 C12.2 12.2 12 12.8 12 13.8"), f("M10.9 17 a1.1 1.1 0 1 0 2.2 0 a1.1 1.1 0 1 0 -2.2 0")];
@@ -175,12 +210,31 @@ const ICONS: Readonly<Record<string, KindIcon>> = {
   RuntimeClass: CLASS,
   Namespace: NAMESPACE,
   Internet: INTERNET,
+  Application: GITOPS_APPLICATION,
+  Kustomization: KUSTOMIZATION,
+  HelmRelease: HELM_RELEASE,
+  GitRepository: SOURCE,
+  OCIRepository: SOURCE,
+  HelmRepository: SOURCE,
+  DestinationRule: DESTINATION_RULE,
+  ServiceEntry: SERVICE_ENTRY,
+  ValidatingWebhookConfiguration: WEBHOOK,
+  MutatingWebhookConfiguration: WEBHOOK,
+  APIService: API_SERVICE,
+  ResourceClaim: DEVICE_CLAIM,
+  ResourceClaimTemplate: DEVICE_CLAIM,
+  DeviceClass: CLASS,
+  CustomResource: CUSTOM_RESOURCE,
 };
 
 /** Every kind with an icon of its own, in a stable order: the 3D atlas is laid out by it. */
 export const ICON_KINDS: readonly string[] = [...Object.keys(ICONS), "?"];
 
 export const iconOf = (kind: string): KindIcon => ICONS[kind] ?? UNKNOWN;
+
+/** The icon a resource of this group and kind shows: its own, else braces for a custom resource. */
+export const iconKeyOf = (gk: { readonly group: string; readonly kind: string }): string =>
+  ICONS[gk.kind] ? gk.kind : gk.group.includes(".") ? "CustomResource" : gk.kind;
 
 export const iconIndexOf = (kind: string): number => {
   const index = ICON_KINDS.indexOf(kind);

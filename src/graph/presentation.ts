@@ -65,6 +65,8 @@ export const BODY = {
   budget: "#2a68ad",
   policy: "#b83e4c",
   monitor: "#a8791f",
+  gitops: "#c4553a",
+  device: "#3d8f8a",
   infra: "#535a70",
 } as const;
 
@@ -87,6 +89,7 @@ const LOOKS: Readonly<Record<string, KindLook>> = {
   TCPRoute: { glyph: "gate", tier: "entry", color: BODY.entry },
   UDPRoute: { glyph: "gate", tier: "entry", color: BODY.entry },
   VirtualService: { glyph: "gate", tier: "entry", color: BODY.entry },
+  ServiceEntry: { glyph: "gate", tier: "entry", color: BODY.entry },
 
   Service: { glyph: "hex", tier: "service", color: BODY.service },
   EndpointSlice: { glyph: "orb", tier: "service", color: BODY.service, infra: true },
@@ -97,6 +100,9 @@ const LOOKS: Readonly<Record<string, KindLook>> = {
   CronJob: { glyph: "block", tier: "controller", color: BODY.kubernetes },
   Rollout: { glyph: "block", tier: "controller", color: BODY.kubernetes },
   ReplicationController: { glyph: "block", tier: "controller", color: BODY.kubernetes },
+  Application: { glyph: "block", tier: "controller", color: BODY.gitops },
+  Kustomization: { glyph: "block", tier: "controller", color: BODY.gitops },
+  HelmRelease: { glyph: "block", tier: "controller", color: BODY.gitops },
 
   ReplicaSet: { glyph: "slab", tier: "replica", color: BODY.replica },
   Job: { glyph: "slab", tier: "replica", color: BODY.replica },
@@ -109,6 +115,11 @@ const LOOKS: Readonly<Record<string, KindLook>> = {
   PersistentVolume: { glyph: "disk", tier: "config", color: BODY.storage },
   Certificate: { glyph: "gem", tier: "config", color: BODY.secret },
   ExternalSecret: { glyph: "gem", tier: "config", color: BODY.secret },
+  ResourceClaim: { glyph: "disk", tier: "config", color: BODY.device },
+  ResourceClaimTemplate: { glyph: "disk", tier: "config", color: BODY.device },
+  GitRepository: { glyph: "tile", tier: "config", color: BODY.gitops },
+  OCIRepository: { glyph: "tile", tier: "config", color: BODY.gitops },
+  HelmRepository: { glyph: "tile", tier: "config", color: BODY.gitops },
 
   ServiceAccount: { glyph: "gem", tier: "identity", color: BODY.identity },
   RoleBinding: { glyph: "gem", tier: "identity", color: BODY.identity },
@@ -127,6 +138,10 @@ const LOOKS: Readonly<Record<string, KindLook>> = {
   NetworkPolicy: { glyph: "ring", tier: "satellite", color: BODY.policy },
   ServiceMonitor: { glyph: "ring", tier: "satellite", color: BODY.monitor },
   PodMonitor: { glyph: "ring", tier: "satellite", color: BODY.monitor },
+  DestinationRule: { glyph: "ring", tier: "satellite", color: BODY.service },
+  ValidatingWebhookConfiguration: { glyph: "ring", tier: "satellite", color: BODY.policy },
+  MutatingWebhookConfiguration: { glyph: "ring", tier: "satellite", color: BODY.policy },
+  APIService: { glyph: "ring", tier: "satellite", color: BODY.infra },
 
   StorageClass: { glyph: "disk", tier: "identity", color: BODY.infra, infra: true },
   Node: { glyph: "orb", tier: "identity", color: BODY.infra, infra: true },
@@ -134,6 +149,7 @@ const LOOKS: Readonly<Record<string, KindLook>> = {
   GatewayClass: { glyph: "orb", tier: "identity", color: BODY.infra, infra: true },
   PriorityClass: { glyph: "orb", tier: "identity", color: BODY.infra, infra: true },
   RuntimeClass: { glyph: "orb", tier: "identity", color: BODY.infra, infra: true },
+  DeviceClass: { glyph: "orb", tier: "identity", color: BODY.infra, infra: true },
 };
 
 /** Kinds nothing describes, typically an operator's custom resource owning pods: a workload of its own. */
@@ -165,6 +181,10 @@ export const EDGE_COLORS: Readonly<Record<EdgeType, string>> = {
   syncsTo: PALETTE.gold,
   readsFrom: PALETTE.gold,
   calls: PALETTE.violet,
+  claims: PALETTE.teal,
+  manages: PALETTE.orange,
+  configures: PALETTE.cyan,
+  servedBy: PALETTE.pink,
 };
 
 /** Edges traffic travels along, animated with packets from the holder to the target. */
@@ -193,6 +213,10 @@ export const EDGE_VERBS: Readonly<Record<EdgeType, string>> = {
   syncsTo: "syncs to",
   readsFrom: "reads from",
   calls: "calls",
+  claims: "claims",
+  manages: "manages",
+  configures: "configures",
+  servedBy: "served by",
 };
 
 
@@ -218,6 +242,10 @@ export const EDGE_INVERSE_VERBS: Readonly<Record<EdgeType, string>> = {
   issues: "issued by",
   issuedBy: "issues",
   syncsTo: "synced by",
-  readsFrom: "store of",
+  readsFrom: "source of",
   calls: "called by",
+  claims: "claimed by",
+  manages: "managed by",
+  configures: "configured by",
+  servedBy: "serves",
 };

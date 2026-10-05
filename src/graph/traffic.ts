@@ -4,7 +4,7 @@ import { describeFlow, MESH_TITLES, type ObservedFlow } from "./mesh";
 import { BODY, lookOf, PALETTE } from "./presentation";
 import { type EdgeType, K, ROOT_OWNER_KINDS } from "./rules";
 import type { GraphEdge, GraphNode, GraphSnapshot } from "./snapshot";
-import { asString, field, isRecord, objectKey, type ObjectKey } from "./types";
+import { asArray, asString, field, isRecord, objectKey, type ObjectKey, sameGroupKind } from "./types";
 
 /**
  * The traffic view: every way a request moves through the cluster, and nothing else. From the
@@ -66,9 +66,23 @@ const GATEWAYS = new Set(["Ingress", "Gateway"]);
 const ROUTES = new Set(["HTTPRoute", "GRPCRoute", "TLSRoute", "TCPRoute", "UDPRoute", "VirtualService"]);
 const WORKLOADS = new Set(ROOT_OWNER_KINDS.map((kind) => kind.kind));
 
-/** Where a node goes when nothing upstream of it says: the column of its kind. */
+/** Where a node goes when nothing upstream of it says: the column of its kind. Ways out come last. */
 const naturalDepth = (node: GraphNode) =>
-  node.id === INTERNET_ID ? 0 : GATEWAYS.has(node.gk.kind) ? 1 : ROUTES.has(node.gk.kind) ? 2 : node.gk.kind === "Service" ? 3 : 4;
+  node.id === INTERNET_ID
+    ? 0
+    : GATEWAYS.has(node.gk.kind)
+      ? 1
+      : ROUTES.has(node.gk.kind)
+        ? 2
+        : node.gk.kind === "Service"
+          ? 3
+          : node.gk.kind === "ServiceEntry"
+            ? 5
+            : 4;
+
+/** Does a ServiceEntry host (exact, or "*.example.com") cover this host? */
+const hostCovers = (pattern: string, host: string) =>
+  pattern === host || (pattern.startsWith("*.") && host.endsWith(pattern.slice(1))) || pattern === "*";
 
 interface TrafficEdge {
   readonly from: ObjectKey;
@@ -254,11 +268,20 @@ const addObserved = (snapshot: GraphSnapshot, edges: Map<string, TrafficEdge>, o
     });
   };
 
+  // Hosts outside the cluster are measured by the ServiceEntry that declares them.
+  const serviceEntries = [...nodes.values()].filter((node) => node.state === "present" && sameGroupKind(node.gk, K.ServiceEntry));
+  const serviceEntryFor = (host: string, namespace: string) => {
+    const covering = serviceEntries.filter((entry) => asArray(field(entry.object, "spec", "hosts")).some((pattern) => typeof pattern === "string" && hostCovers(pattern, host)));
+
+    return (covering.find((entry) => entry.namespace === namespace) ?? covering[0])?.id;
+  };
+
   for (const flow of observed) {
     const from = workloads.get(`${flow.from.namespace}/${flow.from.workload}`);
-    const to = objectKey(K.Service, flow.to.namespace, flow.to.service);
+    const service = objectKey(K.Service, flow.to.namespace, flow.to.service);
+    const to = nodes.has(service) ? service : flow.to.service.includes(".") ? serviceEntryFor(flow.to.service, flow.to.namespace) : undefined;
 
-    if (!from || !nodes.has(to)) {
+    if (!from || !to) {
       continue;
     }
 

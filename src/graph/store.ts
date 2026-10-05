@@ -1,4 +1,4 @@
-import { EXTRACTORS, type ExtractedRef } from "./extractors";
+import { EXTRACTORS, type ExtractedRef, NAME_PATTERNS } from "./extractors";
 import { valuesAt } from "./paths";
 import { CLUSTER_SCOPED, type GroupKind, type Match, type Rule, RULES } from "./rules";
 import { type CompiledSelector, compileSelector, selectorMatches } from "./selectors";
@@ -17,6 +17,7 @@ import {
   matchesGroupKind,
   objectKey,
   type ObjectKey,
+  parseObjectKey,
   sameGroupKind,
 } from "./types";
 
@@ -91,6 +92,19 @@ const removeFrom = <K, V>(map: Map<K, Set<V>>, key: K, value: V) => {
 
 const namespaceKindKey = (namespace: string, gk: GroupKind) => `${namespace}|${groupKindKey(gk)}`;
 
+/** Matches that pick their targets from what exists in the namespace, kept from both sides. */
+type TwoSidedMatch = Extract<Match, { type: "selector" } | { type: "namePattern" }>;
+
+const isTwoSided = (match: Match): match is TwoSidedMatch => match.type === "selector" || match.type === "namePattern";
+
+/** A two-sided match, compiled for one holder: the path an edge to `target` is found at, if it is one. */
+interface TargetMatcher {
+  readonly matchesNothing: boolean;
+  readonly pathTo: (target: StoredObject) => string | undefined;
+}
+
+const NOTHING: TargetMatcher = { matchesNothing: true, pathTo: () => undefined };
+
 /**
  * The objects of a cluster and the edges between them, kept incrementally.
  *
@@ -109,7 +123,7 @@ export class GraphStore {
   private readonly outEdges = new Map<ObjectKey, Map<string, Edge>>();
   private readonly inEdges = new Map<ObjectKey, Map<string, Edge>>();
   /** Per holder, per rule id. */
-  private readonly compiledSelectors = new Map<ObjectKey, Map<string, CompiledSelector>>();
+  private readonly compiledSelectors = new Map<ObjectKey, Map<string, TargetMatcher>>();
   private readonly kindStates = new Map<GroupKindKey, KindState>();
   private readonly holderRulesCache = new Map<GroupKindKey, readonly Rule[]>();
   private readonly selectorRulesTargetingCache = new Map<GroupKindKey, readonly Rule[]>();
@@ -127,6 +141,31 @@ export class GraphStore {
 
   isClusterScoped(gk: GroupKind) {
     return this.clusterScoped.has(groupKindKey(gk));
+  }
+
+  /**
+   * A kind found to be cluster-scoped only once listed (an operator's resource, followed from
+   * an ownerReference). References to it were keyed in their holder's namespace: re-key them.
+   */
+  markClusterScoped(gk: GroupKind) {
+    if (this.isClusterScoped(gk)) {
+      return;
+    }
+
+    this.clusterScoped.add(groupKindKey(gk));
+
+    for (const edges of [...this.outEdges.values()]) {
+      for (const edge of [...edges.values()]) {
+        const rule = this.ruleById(edge.ruleId);
+
+        if (rule && !edge.bySelector && sameGroupKind(edge.toGroupKind, gk)) {
+          this.deleteEdge(edge);
+          this.addEdge(this.edge(rule, edge.from, gk, "", parseObjectKey(edge.to).name, edge.path));
+        }
+      }
+    }
+
+    this.changeCount++;
   }
 
   // --- kinds ---------------------------------------------------------------------------------
@@ -159,6 +198,35 @@ export class GraphStore {
 
   kinds(): ReadonlyMap<GroupKindKey, KindState> {
     return this.kindStates;
+  }
+
+  /**
+   * Kinds that own something here but that nothing tracks, with the API version the owner
+   * reference names them by: an operator's resources (a database cluster owning StatefulSets),
+   * worth listing so they stand in the graph as themselves rather than as unknowns.
+   */
+  ownerKindsOutside(isKnown: (gk: GroupKind) => boolean): ReadonlyArray<{ readonly gk: GroupKind; readonly apiVersion: string }> {
+    const found = new Map<GroupKindKey, { gk: GroupKind; apiVersion: string }>();
+
+    for (const { object } of this.objects.values()) {
+      for (const ref of asArray(object.metadata.ownerReferences as Json)) {
+        const apiVersion = asString(isRecord(ref) ? ref.apiVersion : undefined);
+        const kind = asString(isRecord(ref) ? ref.kind : undefined);
+
+        if (!apiVersion || !kind) {
+          continue;
+        }
+
+        const gk = { group: groupOfApiVersion(apiVersion), kind };
+        const key = groupKindKey(gk);
+
+        if (!found.has(key) && !isKnown(gk)) {
+          found.set(key, { gk, apiVersion });
+        }
+      }
+    }
+
+    return [...found.values()];
   }
 
   // --- objects -------------------------------------------------------------------------------
@@ -286,7 +354,7 @@ export class GraphStore {
     let rules = this.selectorRulesTargetingCache.get(cacheKey);
 
     if (!rules) {
-      rules = this.rules.filter((rule) => rule.match.type === "selector" && sameGroupKind(rule.match.target, gk));
+      rules = this.rules.filter((rule) => isTwoSided(rule.match) && sameGroupKind(rule.match.target, gk));
       this.selectorRulesTargetingCache.set(cacheKey, rules);
     }
 
@@ -356,7 +424,7 @@ export class GraphStore {
 
   private extractOutEdges(stored: StoredObject, raw: KubeObject) {
     for (const rule of this.rulesForHolder(stored.gk)) {
-      if (rule.match.type === "selector") {
+      if (isTwoSided(rule.match)) {
         this.evaluateSelectorOf(rule, rule.match, stored);
         continue;
       }
@@ -367,7 +435,7 @@ export class GraphStore {
     }
   }
 
-  private refsOf(match: Exclude<Match, { type: "selector" }>, { object, gk, namespace }: StoredObject): readonly ExtractedRef[] {
+  private refsOf(match: Exclude<Match, TwoSidedMatch>, { object, gk, namespace }: StoredObject): readonly ExtractedRef[] {
     switch (match.type) {
       case "ownerReferences":
         return asArray(object.metadata.ownerReferences as Json).flatMap((ref, index) => {
@@ -472,7 +540,7 @@ export class GraphStore {
     }
   }
 
-  private compiledSelectorOf(rule: Rule, match: Extract<Match, { type: "selector" }>, holder: StoredObject) {
+  private compiledSelectorOf(rule: Rule, match: TwoSidedMatch, holder: StoredObject): TargetMatcher {
     let ofHolder = this.compiledSelectors.get(holder.key);
 
     if (!ofHolder) {
@@ -483,28 +551,43 @@ export class GraphStore {
     let compiled = ofHolder.get(rule.id);
 
     if (!compiled) {
-      const selector = valuesAt(holder.object, match.path, holder.gk)[0]?.value;
-
-      compiled = compileSelector(selector, match.form, match.empty);
+      compiled = this.compileMatcher(match, holder);
       ofHolder.set(rule.id, compiled);
     }
 
     return compiled;
   }
 
-  /** Holder side: a Service (say) was added or changed; find the pods it selects. */
-  private evaluateSelectorOf(rule: Rule, match: Extract<Match, { type: "selector" }>, holder: StoredObject) {
-    const selector = this.compiledSelectorOf(rule, match, holder);
+  private compileMatcher(match: TwoSidedMatch, holder: StoredObject): TargetMatcher {
+    if (match.type === "namePattern") {
+      const patterns = NAME_PATTERNS[match.patternId]?.(holder.object) ?? [];
 
-    if (selector.matchesNothing) {
+      return patterns.length === 0
+        ? NOTHING
+        : { matchesNothing: false, pathTo: (target) => patterns.find(({ pattern }) => pattern.test(target.object.metadata.name))?.path };
+    }
+
+    const selector: CompiledSelector = compileSelector(valuesAt(holder.object, match.path, holder.gk)[0]?.value, match.form, match.empty);
+
+    return selector.matchesNothing
+      ? NOTHING
+      : { matchesNothing: false, pathTo: (target) => (selectorMatches(selector, target.object.metadata.labels) ? match.path : undefined) };
+  }
+
+  /** Holder side: a Service (say) was added or changed; find the pods it selects. */
+  private evaluateSelectorOf(rule: Rule, match: TwoSidedMatch, holder: StoredObject) {
+    const matcher = this.compiledSelectorOf(rule, match, holder);
+
+    if (matcher.matchesNothing) {
       return;
     }
 
     for (const targetKey of this.keysByNamespaceKind.get(namespaceKindKey(holder.namespace, match.target)) ?? []) {
       const target = this.objects.get(targetKey);
+      const path = target && matcher.pathTo(target);
 
-      if (target && selectorMatches(selector, target.object.metadata.labels)) {
-        this.addEdge(this.edge(rule, holder.key, match.target, holder.namespace, target.object.metadata.name, match.path, true));
+      if (target && path !== undefined) {
+        this.addEdge(this.edge(rule, holder.key, match.target, holder.namespace, target.object.metadata.name, path, true));
       }
     }
   }
@@ -512,7 +595,7 @@ export class GraphStore {
   /** Target side: a pod (say) was added or changed; find the selectors of its namespace that select it. */
   private evaluateSelectorsTargeting(target: StoredObject) {
     for (const rule of this.selectorRulesTargeting(target.gk)) {
-      const match = rule.match as Extract<Match, { type: "selector" }>;
+      const match = rule.match as TwoSidedMatch;
 
       for (const holderKind of rule.holders) {
         for (const holderKey of this.keysByNamespaceKind.get(namespaceKindKey(target.namespace, holderKind)) ?? []) {
@@ -522,8 +605,10 @@ export class GraphStore {
             continue;
           }
 
-          if (selectorMatches(this.compiledSelectorOf(rule, match, holder), target.object.metadata.labels)) {
-            this.addEdge(this.edge(rule, holder.key, match.target, holder.namespace, target.object.metadata.name, match.path, true));
+          const path = this.compiledSelectorOf(rule, match, holder).pathTo(target);
+
+          if (path !== undefined) {
+            this.addEdge(this.edge(rule, holder.key, match.target, holder.namespace, target.object.metadata.name, path, true));
           }
         }
       }

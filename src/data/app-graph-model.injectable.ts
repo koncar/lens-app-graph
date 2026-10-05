@@ -10,8 +10,8 @@ import {
 import { action, computed, type IComputedValue, type IObservableValue, observable, reaction, runInAction } from "mobx";
 import { buildSnapshot, type GraphSnapshot } from "../graph/snapshot";
 import { GraphStore, type KindState } from "../graph/store";
-import { groupKindKey, type KubeObject } from "../graph/types";
-import { TRACKED_KINDS, type TrackedKind } from "./tracked-kinds";
+import { groupKindKey, type KubeObject, sameGroupKind } from "../graph/types";
+import { customKind, TRACKED_KINDS, type TrackedKind } from "./tracked-kinds";
 
 /** The scope of a model: one namespace, or every namespace the connection can see. */
 export const ALL_NAMESPACES = "*";
@@ -43,6 +43,12 @@ export interface AppGraphModel {
 const SNAPSHOT_THROTTLE_MS = 700;
 /** How many namespaces a kind forbidden cluster-wide is listed in, one watch each. */
 const PER_NAMESPACE_LIMIT = 40;
+/** How many kinds learnt of from ownerReferences are followed: operators' resources. */
+const DISCOVERED_LIMIT = 24;
+/** Looking for owners nothing tracks is a walk over every object: not on every change. */
+const DISCOVERY_DELAY_MS = 3000;
+
+const isTracked = (gk: { group: string; kind: string }) => TRACKED_KINDS.some((entry) => sameGroupKind(entry.gk, gk));
 
 const describeFailure = (error: unknown): string => {
   const message = error instanceof Error ? error.message : String(error);
@@ -222,6 +228,15 @@ export const appGraphModelInjectable = getInjectable2({
               }
 
               cleanups.push(subscription.dispose);
+
+              // Followed from an ownerReference, its scope was a guess: objects without a
+              // namespace say it is cluster-scoped.
+              const first = list.get()[0] as unknown as KubeObject | undefined;
+
+              if (entry.custom && first && !first.metadata.namespace) {
+                target.markClusterScoped(entry.gk);
+              }
+
               setState(
                 scope !== ALL_NAMESPACES && !target.isClusterScoped(entry.gk)
                   ? { phase: "ready", namespaces: new Set([scope]) }
@@ -278,19 +293,21 @@ export const appGraphModelInjectable = getInjectable2({
       /** Lists and watches every wanted kind into a fresh store; returns what stops it all. */
       const run = () => {
         const current = new GraphStore();
-        const tracked = new Map<string, () => void>();
-        const wanted = computed(() => TRACKED_KINDS.filter((entry) => !entry.infra || includeInfra.get()));
+        const tracked = new Map<string, { readonly entry: TrackedKind; readonly stop: () => void }>();
+        /** Owner kinds learnt of from the cluster, by group/kind. */
+        const discovered = observable.map<string, TrackedKind>({}, { deep: false });
+        const wanted = computed(() => [...TRACKED_KINDS.filter((entry) => !entry.infra || includeInfra.get()), ...discovered.values()]);
 
         const stopSyncingKinds = reaction(
           () => wanted.get(),
           (entries) => {
             const keys = new Set(entries.map((entry) => groupKindKey(entry.gk)));
 
-            for (const [key, stop] of tracked) {
+            for (const [key, { entry, stop }] of tracked) {
               if (!keys.has(key)) {
                 stop();
                 tracked.delete(key);
-                current.setKindState(TRACKED_KINDS.find((entry) => groupKindKey(entry.gk) === key)!.gk, { phase: "untracked" });
+                current.setKindState(entry.gk, { phase: "untracked" });
                 bump();
               }
             }
@@ -299,11 +316,35 @@ export const appGraphModelInjectable = getInjectable2({
               const key = groupKindKey(entry.gk);
 
               if (!tracked.has(key)) {
-                tracked.set(key, track(current, entry));
+                tracked.set(key, { entry, stop: track(current, entry) });
               }
             }
           },
           { fireImmediately: true },
+        );
+
+        // An operator's resource owning pods is listed too, so it stands in the graph as itself:
+        // its name, its health, its details. Asked about like any custom resource.
+        const stopDiscovering = reaction(
+          () => version.get(),
+          () => {
+            if (discovered.size >= DISCOVERED_LIMIT) {
+              return;
+            }
+
+            const found = current
+              .ownerKindsOutside((gk) => isTracked(gk) || discovered.has(groupKindKey(gk)))
+              .slice(0, DISCOVERED_LIMIT - discovered.size);
+
+            if (found.length > 0) {
+              runInAction(() => {
+                for (const { gk, apiVersion } of found) {
+                  discovered.set(groupKindKey(gk), customKind(gk.group, gk.kind, [apiVersion.includes("/") ? apiVersion.split("/")[1]! : apiVersion]));
+                }
+              });
+            }
+          },
+          { delay: DISCOVERY_DELAY_MS },
         );
 
         const stopSnapshotting = reaction(
@@ -314,7 +355,8 @@ export const appGraphModelInjectable = getInjectable2({
 
         return () => {
           stopSyncingKinds();
-          tracked.forEach((stop) => stop());
+          stopDiscovering();
+          tracked.forEach(({ stop }) => stop());
           tracked.clear();
           stopSnapshotting();
         };

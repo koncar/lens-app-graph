@@ -179,6 +179,25 @@ const readyConditionHealth = (object: KubeObject): HealthReport | undefined => {
   return { health: ready.status === "False" ? "error" : "warn", summary: asString(ready.reason) ?? "Not ready" };
 };
 
+/** Argo CD's own verdict: health, and whether the cluster matches git. */
+const ARGO_HEALTH: Readonly<Record<string, Health>> = {
+  Healthy: "ok",
+  Progressing: "warn",
+  Suspended: "idle",
+  Degraded: "error",
+  Missing: "error",
+};
+
+const argoCdApplicationHealth = (application: KubeObject): HealthReport => {
+  const health = asString(field(application, "status", "health", "status"));
+  const sync = asString(field(application, "status", "sync", "status"));
+  const verdict: Health = (health ? ARGO_HEALTH[health] : undefined) ?? "unknown";
+  const summary = [sync, health].filter(Boolean).join(" · ") || undefined;
+
+  // Healthy but out of sync with git is what Argo CD shows in yellow.
+  return { health: verdict === "ok" && sync === "OutOfSync" ? "warn" : verdict, summary };
+};
+
 /** Health from the object alone. Relationship-based health (a Service with no pods) is added by the graph. */
 export const healthOf = (object: KubeObject): HealthReport => {
   switch (object.kind) {
@@ -221,6 +240,24 @@ export const healthOf = (object: KubeObject): HealthReport => {
       return { health: "neutral", summary: asString(field(object, "status", "phase")) };
     case "Service":
       return { health: "ok", summary: asString(field(object, "spec", "type")) };
+    case "Application":
+      return argoCdApplicationHealth(object);
+    case "Kustomization":
+    case "HelmRelease":
+    case "GitRepository":
+    case "OCIRepository":
+    case "HelmRepository":
+      return field(object, "spec", "suspend") === true ? { health: "idle", summary: "Suspended" } : (readyConditionHealth(object) ?? { health: "unknown" });
+    case "APIService": {
+      // An aggregated API that is not available breaks discovery for every client of the cluster.
+      const available = condition(object, "Available");
+
+      return !available || available.status === "True"
+        ? { health: field(object, "spec", "service") ? "ok" : "neutral", summary: field(object, "spec", "service") ? "Available" : "Local" }
+        : { health: "error", summary: asString(available.reason) ?? "Unavailable" };
+    }
+    case "ResourceClaim":
+      return isRecord(field(object, "status", "allocation")) ? { health: "ok", summary: "Allocated" } : { health: "warn", summary: "Pending" };
     case "Node": {
       const ready = condition(object, "Ready");
 
@@ -240,6 +277,12 @@ export const healthOf = (object: KubeObject): HealthReport => {
     case "RuntimeClass":
     case "IngressClass":
     case "EndpointSlice":
+    case "ValidatingWebhookConfiguration":
+    case "MutatingWebhookConfiguration":
+    case "DestinationRule":
+    case "ServiceEntry":
+    case "ResourceClaimTemplate":
+    case "DeviceClass":
       return { health: "neutral" };
     default:
       return readyConditionHealth(object) ?? { health: "ok" };

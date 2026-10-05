@@ -1,6 +1,6 @@
 {
   "name": "@skoncar/lens-app-graph",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "See every app in your cluster in 3D: how its resources connect, what is broken, and where traffic flows, live.",
   "license": "MIT",
   "author": "skoncar",

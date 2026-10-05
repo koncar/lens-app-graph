@@ -592,7 +592,7 @@ describe("istio", () => {
     assert.deepEqual(hops, ["Internet:internet>public", "Gateway:public>web", "VirtualService:web>web", "Service:web>web", "Service:orders>orders"].sort());
   });
 
-  it("reads mesh requests from either reporter, and drops what is outside the cluster", async () => {
+  it("reads mesh requests from either reporter, and drops what the mesh cannot name", async () => {
     const { MESH_QUERIES, parseMeshSeries } = await import("./mesh");
     const query = (mesh: string, metric: string) => MESH_QUERIES.find((entry) => entry.mesh === mesh && entry.metric === metric)!;
     const istio = (from: string, to: string, value: string, toNamespace = "shop") => ({
@@ -600,7 +600,7 @@ describe("istio", () => {
       values: [[1, "0"], [2, value]] as Array<[number, string]>,
     });
     const { meshes, flows } = parseMeshSeries([
-      { query: query("istio", "requests"), series: [istio("web", "orders", "12.5"), istio("unknown", "orders", "3"), istio("web", "api.stripe.com", "1", "shop")] },
+      { query: query("istio", "requests"), series: [istio("web", "orders", "12.5"), istio("unknown", "orders", "3"), istio("web", "PassthroughCluster", "1")] },
       { query: query("istio", "errors"), series: [istio("web", "orders", "0.5")] },
       {
         query: query("linkerd", "requests"),
@@ -680,5 +680,243 @@ describe("traffic lanes", () => {
       assert.equal(route.z, service.z);
       assert.ok(route.x < service.x);
     }
+  });
+});
+
+describe("links from the Kubernetes API", () => {
+  const targetsOf = (store: GraphStore, from: string, ruleId: string) =>
+    edgesFrom(store, from)
+      .filter((edge) => edge.ruleId === ruleId)
+      .map((edge) => edge.to)
+      .sort();
+
+  it("links a StatefulSet to every claim of its templates, retained ones included, from either side", () => {
+    const set = obj("apps/v1", "StatefulSet", "db", { spec: { replicas: 1, volumeClaimTemplates: [{ metadata: { name: "data" } }, { metadata: { name: "wal" } }] } });
+    const store = storeWith(
+      set,
+      obj("v1", "PersistentVolumeClaim", "data-db-0", { spec: {} }),
+      obj("v1", "PersistentVolumeClaim", "wal-db-0", { spec: {} }),
+      // Left behind by a scale-down: still the set's data.
+      obj("v1", "PersistentVolumeClaim", "data-db-4", { spec: {} }),
+      // Another set's, and a claim that only starts the same.
+      obj("v1", "PersistentVolumeClaim", "data-db-cache-0", { spec: {} }),
+      obj("v1", "PersistentVolumeClaim", "data-db", { spec: {} }),
+    );
+
+    assert.deepEqual(
+      targetsOf(store, key(K.StatefulSet, "db"), "statefulset.claims"),
+      [key(K.PersistentVolumeClaim, "data-db-0"), key(K.PersistentVolumeClaim, "data-db-4"), key(K.PersistentVolumeClaim, "wal-db-0")].sort(),
+    );
+
+    // A claim created afterwards is linked as it arrives.
+    store.upsert(obj("v1", "PersistentVolumeClaim", "data-db-1", { spec: {} }));
+    assert.ok(targetsOf(store, key(K.StatefulSet, "db"), "statefulset.claims").includes(key(K.PersistentVolumeClaim, "data-db-1")));
+
+    const edge = edgesFrom(store, key(K.StatefulSet, "db")).find((candidate) => candidate.to === key(K.PersistentVolumeClaim, "wal-db-0"))!;
+
+    assert.equal(edge.path, "spec.volumeClaimTemplates[1]");
+  });
+
+  it("links a pod's subdomain to its headless Service, and an ExternalName alias to the Service it names", () => {
+    const store = storeWith(
+      pod("web-0", { subdomain: "web" }),
+      obj("v1", "Service", "web", { spec: { clusterIP: "None" } }),
+      obj("v1", "Service", "orders", { spec: {} }),
+      obj("v1", "Service", "orders-alias", { spec: { type: "ExternalName", externalName: "orders.shop.svc.cluster.local" } }),
+      obj("v1", "Service", "stripe", { spec: { type: "ExternalName", externalName: "api.stripe.com" } }),
+    );
+    const snapshot = buildSnapshot(store);
+
+    assert.deepEqual(targetsOf(store, key(K.Pod, "web-0"), "podspec.subdomain"), [key(K.Service, "web")]);
+    assert.deepEqual(
+      snapshot.edges.filter((edge) => edge.ruleId === "service.external-name").map((edge) => `${edge.from}>${edge.to}`),
+      [`${key(K.Service, "orders-alias")}>${key(K.Service, "orders")}`],
+    );
+  });
+
+  it("follows routes whose parent is a Service, and their mirrors, into the Traffic Graph", async () => {
+    const { buildTraffic } = await import("./traffic");
+    const store = storeWith(
+      obj("gateway.networking.k8s.io/v1", "HTTPRoute", "reviews-split", {
+        spec: {
+          parentRefs: [{ group: "", kind: "Service", name: "reviews" }],
+          rules: [
+            { backendRefs: [{ name: "reviews-v1" }, { name: "reviews-v2" }], filters: [{ type: "RequestMirror", requestMirror: { backendRef: { name: "reviews-shadow" } } }] },
+          ],
+        },
+      }),
+      obj("v1", "Service", "reviews", { spec: {} }),
+      obj("v1", "Service", "reviews-v1", { spec: {} }),
+      obj("v1", "Service", "reviews-v2", { spec: {} }),
+      obj("v1", "Service", "reviews-shadow", { spec: {} }),
+    );
+    const hops = buildTraffic(buildSnapshot(store))
+      .map((edge) => `${edge.from.split("/").pop()}>${edge.to.split("/").pop()}`)
+      .sort();
+
+    assert.deepEqual(hops, ["reviews-split>reviews-shadow", "reviews-split>reviews-v1", "reviews-split>reviews-v2", "reviews>reviews-split"].sort());
+  });
+
+  it("links admission webhooks and aggregated APIs to the Service that answers them, and calls a vanished one broken", () => {
+    const store = storeWith(
+      obj("admissionregistration.k8s.io/v1", "ValidatingWebhookConfiguration", "policy", {
+        namespace: null,
+        webhooks: [
+          { name: "a.example.com", clientConfig: { service: { namespace: "shop", name: "policy-webhook" } } },
+          { name: "b.example.com", clientConfig: { service: { namespace: "shop", name: "gone" } } },
+        ],
+      }),
+      obj("apiregistration.k8s.io/v1", "APIService", "v1beta1.metrics.k8s.io", {
+        namespace: null,
+        spec: { service: { namespace: "shop", name: "metrics-server" } },
+        status: { conditions: [{ type: "Available", status: "False", reason: "MissingEndpoints" }] },
+      }),
+      obj("v1", "Service", "policy-webhook", { spec: {} }),
+      obj("v1", "Service", "metrics-server", { spec: {} }),
+    );
+    const snapshot = buildSnapshot(store);
+    const webhook = key(K.ValidatingWebhookConfiguration, "policy", "");
+
+    assert.deepEqual(
+      snapshot.edges.filter((edge) => edge.from === webhook).map((edge) => [edge.to, edge.state]),
+      [
+        [key(K.Service, "policy-webhook"), "resolved"],
+        [key(K.Service, "gone"), "missing"],
+      ],
+    );
+    assert.equal(snapshot.nodes.get(key(K.APIService, "v1beta1.metrics.k8s.io", ""))!.health, "error");
+  });
+
+  it("reads what Argo CD and Flux applied, and their verdicts", () => {
+    const store = storeWith(
+      obj("argoproj.io/v1alpha1", "Application", "shop", {
+        namespace: "argocd",
+        status: {
+          sync: { status: "OutOfSync" },
+          health: { status: "Healthy" },
+          resources: [
+            { version: "v1", kind: "Service", namespace: "shop", name: "web" },
+            { group: "apps", version: "v1", kind: "Deployment", namespace: "shop", name: "web" },
+          ],
+        },
+      }),
+      obj("kustomize.toolkit.fluxcd.io/v1", "Kustomization", "infra", {
+        namespace: "flux-system",
+        spec: { sourceRef: { kind: "GitRepository", name: "fleet" } },
+        status: { inventory: { entries: [{ id: "shop_web_apps_Deployment", v: "v1" }, { id: "_shop__Namespace", v: "v1" }] } },
+      }),
+      obj("source.toolkit.fluxcd.io/v1", "GitRepository", "fleet", { namespace: "flux-system", spec: {} }),
+      obj("v1", "Service", "web", { spec: {} }),
+      obj("apps/v1", "Deployment", "web", { spec: {} }),
+    );
+    const snapshot = buildSnapshot(store);
+    const application = snapshot.nodes.get(key(K.Application, "shop", "argocd"))!;
+
+    assert.deepEqual(targetsOf(store, application.id, "argocd.application.resources"), [key(K.Deployment, "web"), key(K.Service, "web")].sort());
+    assert.equal(application.health, "warn");
+    assert.equal(application.summary, "OutOfSync · Healthy");
+    assert.deepEqual(targetsOf(store, key(K.Kustomization, "infra", "flux-system"), "flux.kustomization.inventory"), [
+      objectKey({ group: "", kind: "Namespace" }, "", "shop"),
+      key(K.Deployment, "web"),
+    ]);
+    assert.deepEqual(targetsOf(store, key(K.Kustomization, "infra", "flux-system"), "flux.source"), [key(K.GitRepository, "fleet", "flux-system")]);
+    // Each is an app of its own, beside what it manages.
+    assert.equal(application.appId, `argocd/shop`);
+  });
+
+  it("links a DestinationRule to its Service, and mesh traffic to outside hosts to their ServiceEntry", async () => {
+    const { buildTraffic } = await import("./traffic");
+    const web = obj("apps/v1", "Deployment", "web");
+    const store = storeWith(
+      obj("networking.istio.io/v1", "DestinationRule", "web", { spec: { host: "web.shop.svc.cluster.local" } }),
+      obj("networking.istio.io/v1", "DestinationRule", "stripe", { spec: { host: "api.stripe.com" } }),
+      obj("networking.istio.io/v1", "ServiceEntry", "payments-api", { spec: { hosts: ["*.stripe.com"] } }),
+      obj("v1", "Service", "web", { spec: { selector: { app: "web" } } }),
+      web,
+      pod("web-1", {}, { owners: [web], labels: { app: "web" } }),
+    );
+    const snapshot = buildSnapshot(store);
+
+    assert.deepEqual(
+      snapshot.edges.filter((edge) => edge.ruleId === "istio.destinationrule.host").map((edge) => edge.to),
+      [key(K.Service, "web")],
+    );
+
+    const egress = buildTraffic(snapshot, [
+      { mesh: "istio", from: { namespace: "shop", workload: "web" }, to: { namespace: "shop", service: "api.stripe.com" }, requestsPerSecond: 3, errorsPerSecond: 0, bytesPerSecond: 0 },
+    ]).find((edge) => edge.to === key(K.ServiceEntry, "payments-api"))!;
+
+    assert.equal(egress.from, key(K.Deployment, "web"));
+    assert.equal(egress.observed?.requestsPerSecond, 3);
+  });
+
+  it("links pods to the devices they claim", () => {
+    const store = storeWith(
+      obj("apps/v1", "Deployment", "trainer", {
+        spec: { template: { spec: { containers: [{ name: "main" }], resourceClaims: [{ name: "gpu", resourceClaimTemplateName: "one-gpu" }] } } },
+      }),
+      obj("resource.k8s.io/v1", "ResourceClaimTemplate", "one-gpu", { spec: { spec: { devices: { requests: [{ name: "gpu", exactly: { deviceClassName: "gpu.example.com" } }] } } } }),
+      obj("resource.k8s.io/v1", "DeviceClass", "gpu.example.com", { namespace: null, spec: {} }),
+    );
+
+    assert.deepEqual(targetsOf(store, key(K.Deployment, "trainer"), "podspec.resource-claim-template"), [key(K.ResourceClaimTemplate, "one-gpu")]);
+    assert.deepEqual(targetsOf(store, key(K.ResourceClaimTemplate, "one-gpu"), "resourceclaim.device-class"), [key(K.DeviceClass, "gpu.example.com", "")]);
+  });
+});
+
+describe("operators' resources", () => {
+  const cluster = obj("postgresql.cnpg.io/v1", "Cluster", "orders-db", { spec: {}, status: { conditions: [{ type: "Ready", status: "True" }] } });
+  const owned = () => [
+    pod("orders-db-1", {}, { owners: [cluster] }),
+    obj("v1", "Service", "orders-db-rw", { owners: [cluster], spec: {} }),
+  ];
+
+  it("names the kinds that own things but that nothing tracks, with the version to ask for", () => {
+    const store = storeWith(...owned());
+    const known = (gk: { group: string; kind: string }) => Object.values(K).some((kind) => kind.group === gk.group && kind.kind === gk.kind);
+
+    assert.deepEqual(store.ownerKindsOutside(known), [{ gk: { group: "postgresql.cnpg.io", kind: "Cluster" }, apiVersion: "postgresql.cnpg.io/v1" }]);
+  });
+
+  it("makes a listed operator resource the root of the app it owns, with its own health", () => {
+    const store = storeWith(...owned(), cluster);
+    const snapshot = buildSnapshot(store);
+    const root = snapshot.nodes.get(objectKey({ group: "postgresql.cnpg.io", kind: "Cluster" }, "shop", "orders-db"))!;
+
+    assert.equal(root.state, "present");
+    assert.equal(root.health, "ok");
+    assert.equal(snapshot.nodes.get(key(K.Pod, "orders-db-1"))!.appId, root.appId);
+    assert.equal(root.appId, "shop/orders-db");
+  });
+
+  it("re-keys references to an owner kind found to be cluster-scoped", () => {
+    const composite = obj("example.org/v1", "XDatabase", "orders", { namespace: null, spec: {} });
+    const store = storeWith(pod("orders-1", {}, { owners: [composite] }));
+
+    store.markClusterScoped({ group: "example.org", kind: "XDatabase" });
+    store.applyList({ group: "example.org", kind: "XDatabase" }, [composite]);
+
+    assert.deepEqual(
+      edgesFrom(store, key(K.Pod, "orders-1")).filter((edge) => edge.type === "ownedBy").map((edge) => edge.to),
+      [objectKey({ group: "example.org", kind: "XDatabase" }, "", "orders")],
+    );
+    assert.equal(buildSnapshot(store).edges.find((edge) => edge.type === "ownedBy")!.state, "resolved");
+  });
+});
+
+describe("flux apps", () => {
+  it("keeps what a Kustomization applied in its own namespace, one app per namespace", () => {
+    const flux = { "kustomize.toolkit.fluxcd.io/name": "monitoring", "kustomize.toolkit.fluxcd.io/namespace": "flux-system" };
+    const store = storeWith(
+      obj("apps/v1", "Deployment", "agent", { namespace: "metrics", labels: flux, spec: {} }),
+      obj("apps/v1", "Deployment", "alerts", { namespace: "alerting", labels: flux, spec: {} }),
+      obj("rbac.authorization.k8s.io/v1", "ClusterRole", "agent", { namespace: null, labels: flux }),
+    );
+    const snapshot = buildSnapshot(store);
+
+    assert.equal(snapshot.nodes.get(key(K.Deployment, "agent", "metrics"))!.appId, "metrics/monitoring");
+    assert.equal(snapshot.nodes.get(key(K.Deployment, "alerts", "alerting"))!.appId, "alerting/monitoring");
+    // A cluster-scoped resource has no namespace of its own: the Kustomization's places it.
+    assert.equal(snapshot.nodes.get(key(K.ClusterRole, "agent", ""))!.appId, "flux-system/monitoring");
   });
 });
