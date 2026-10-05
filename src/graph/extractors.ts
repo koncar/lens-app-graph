@@ -98,6 +98,48 @@ const istioVirtualServiceGateways: Extractor = (virtualService) =>
     return name ? [{ target: K.IstioGateway, namespace: namespace!, name, path: `spec.gateways[${index}]` }] : [];
   });
 
+/** A DestinationRule's `spec.host`, read like a VirtualService's destinations. */
+const istioDestinationRuleHost: Extractor = (destinationRule) => {
+  const host = asString(field(destinationRule, "spec", "host"));
+  const parsed = host ? parseServiceHost(host, destinationRule.metadata.namespace ?? "") : undefined;
+
+  return parsed ? [{ target: K.Service, ...parsed, path: "spec.host" }] : [];
+};
+
+// --- what a GitOps tool applied --------------------------------------------------------------
+
+/** Argo CD keeps every resource of an Application in `status.resources`: group (core left out), kind, namespace, name. */
+const argoCdApplicationResources: Extractor = (application) =>
+  asArray(field(application, "status", "resources")).flatMap((resource, index) => {
+    const kind = asString(field(resource, "kind"));
+    const name = asString(field(resource, "name"));
+
+    return kind && name
+      ? [
+          {
+            target: { group: asString(field(resource, "group")) ?? "", kind },
+            namespace: asString(field(resource, "namespace")) ?? "",
+            name,
+            path: `status.resources[${index}]`,
+          },
+        ]
+      : [];
+  });
+
+/** Flux keeps what it applied in `status.inventory.entries[].id`: "<namespace>_<name>_<group>_<kind>". */
+const fluxInventory: Extractor = (holder) =>
+  asArray(field(holder, "status", "inventory", "entries")).flatMap((entry, index) => {
+    const parts = (asString(field(entry, "id")) ?? "").split("_");
+
+    if (parts.length !== 4 || !parts[1] || !parts[3]) {
+      return [];
+    }
+
+    const [namespace, name, group, kind] = parts as [string, string, string, string];
+
+    return [{ target: { group, kind }, namespace, name, path: `status.inventory.entries[${index}]` }];
+  });
+
 // --- Service DNS names in free text ----------------------------------------------------------
 
 const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
@@ -192,6 +234,21 @@ const serviceHostsInPodSpec: Extractor = (holder) => {
   return serviceRefs(texts, holder.metadata.namespace ?? "");
 };
 
+/** A Service of type ExternalName is a CNAME; when the name is a Service of this cluster, it aliases it. */
+const externalNameService: Extractor = (service) => {
+  const host = asString(field(service, "spec", "externalName"));
+
+  if (asString(field(service, "spec", "type")) !== "ExternalName" || !host) {
+    return [];
+  }
+
+  const target = serviceOfHost(host, service.metadata.namespace ?? "");
+
+  return target && !(target.name === service.metadata.name && target.namespace === service.metadata.namespace)
+    ? [{ target: K.Service, ...target, path: "spec.externalName" }]
+    : [];
+};
+
 /** Every value of a ConfigMap: config files name the services they talk to. */
 const serviceHostsInConfig: Extractor = (configMap) => {
   const data = field(configMap, "data");
@@ -203,10 +260,38 @@ const serviceHostsInConfig: Extractor = (configMap) => {
 };
 
 export const EXTRACTORS: Readonly<Record<string, Extractor>> = {
+  "argocd-application-resources": argoCdApplicationResources,
   "ephemeral-volume-pvc-names": ephemeralVolumePvcNames,
+  "external-name-service": externalNameService,
   "external-secret-target-name": externalSecretTargetName,
+  "flux-inventory": fluxInventory,
   "istio-destination-hosts": istioDestinationHosts,
+  "istio-destinationrule-host": istioDestinationRuleHost,
   "istio-virtualservice-gateways": istioVirtualServiceGateways,
   "service-hosts-in-pod-spec": serviceHostsInPodSpec,
   "service-hosts-in-config": serviceHostsInConfig,
+};
+
+// --- names that follow a pattern ------------------------------------------------------------
+
+/** One way a holder's targets are named, and the field that says so. */
+export interface NamePattern {
+  readonly pattern: RegExp;
+  readonly path: string;
+}
+
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** "<template>-<set>-<ordinal>", one pattern per volumeClaimTemplate. */
+const statefulSetClaims = (statefulSet: KubeObject): readonly NamePattern[] =>
+  asArray(field(statefulSet, "spec", "volumeClaimTemplates")).flatMap((template, index) => {
+    const name = asString(field(template, "metadata", "name"));
+
+    return name
+      ? [{ pattern: new RegExp(`^${escape(name)}-${escape(statefulSet.metadata.name)}-\\d+$`), path: `spec.volumeClaimTemplates[${index}]` }]
+      : [];
+  });
+
+export const NAME_PATTERNS: Readonly<Record<string, (holder: KubeObject) => readonly NamePattern[]>> = {
+  "statefulset-claims": statefulSetClaims,
 };

@@ -3,13 +3,15 @@ import { ICON_KINDS, iconOf } from "../graph/kind-icons";
 
 const CELL = 128;
 export const ATLAS_COLUMNS = 8;
+/** As many rows as the icons need, a power of two so the texture mipmaps cleanly. */
+export const ATLAS_ROWS = 2 ** Math.ceil(Math.log2(Math.max(ATLAS_COLUMNS, Math.ceil(ICON_KINDS.length / ATLAS_COLUMNS))));
 
 /** Every kind's icon, white on transparent, in one texture: all icons are one draw call. */
 export const createIconAtlas = (): Texture => {
   const canvas = document.createElement("canvas");
 
   canvas.width = CELL * ATLAS_COLUMNS;
-  canvas.height = CELL * ATLAS_COLUMNS;
+  canvas.height = CELL * ATLAS_ROWS;
 
   const context = canvas.getContext("2d")!;
   const scale = (CELL / 24) * 0.84;
@@ -55,10 +57,11 @@ export const createIconMaterial = (atlas: Texture) =>
   new ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    uniforms: { uAtlas: { value: atlas }, uColumns: { value: ATLAS_COLUMNS } },
+    uniforms: { uAtlas: { value: atlas }, uColumns: { value: ATLAS_COLUMNS }, uRows: { value: ATLAS_ROWS } },
     vertexShader: /* glsl */ `
       attribute float aIcon;
       uniform float uColumns;
+      uniform float uRows;
       varying vec2 vUv;
       varying vec3 vTint;
 
@@ -66,7 +69,7 @@ export const createIconMaterial = (atlas: Texture) =>
         float column = mod(aIcon, uColumns);
         float row = floor(aIcon / uColumns);
 
-        vUv = vec2((column + uv.x) / uColumns, (uColumns - 1.0 - row + uv.y) / uColumns);
+        vUv = vec2((column + uv.x) / uColumns, (uRows - 1.0 - row + uv.y) / uRows);
         #ifdef USE_INSTANCING_COLOR
           vTint = instanceColor;
         #else

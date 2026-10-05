@@ -43,7 +43,7 @@ export const showInAppGraphMenuItemBunch = getKubeResourceMenuItemInjectableBunc
 });
 
 /** The kinds the traffic view draws: the path a request takes. */
-const IN_TRAFFIC = new Set(["Service", "Ingress", "Gateway", "HTTPRoute", "GRPCRoute", "VirtualService", "Deployment", "StatefulSet", "DaemonSet", "Rollout"]);
+const IN_TRAFFIC = new Set(["Service", "Ingress", "Gateway", "HTTPRoute", "GRPCRoute", "VirtualService", "ServiceEntry", "Deployment", "StatefulSet", "DaemonSet", "Rollout"]);
 
 const ShowInTrafficGraph = ({ data }: { data: KubeResourceMenuTarget }) => {
   const showTrafficGraph = useInject(showTrafficGraphInjectable)();

@@ -53,8 +53,12 @@ export type EdgeType =
   | "issues" //          cert-manager Certificate -> Secret
   | "issuedBy" //        Certificate -> Issuer/ClusterIssuer
   | "syncsTo" //         ExternalSecret -> Secret
-  | "readsFrom" //       ExternalSecret -> SecretStore
-  | "calls"; //          workload or its config names a Service's DNS name (inferred traffic)
+  | "readsFrom" //       ExternalSecret -> SecretStore, Flux object -> its source or values
+  | "calls" //           workload or its config names a Service's DNS name (inferred traffic)
+  | "claims" //          pod -> ResourceClaim / ResourceClaimTemplate (devices, DRA)
+  | "manages" //         Argo CD Application / Flux Kustomization -> what it applied
+  | "configures" //      Istio DestinationRule -> the Service its traffic policy is for
+  | "servedBy"; //       admission webhook / APIService -> the Service that answers it
 
 /**
  * How app-membership expansion may cross an edge of this rule, starting from a node that is
@@ -124,6 +128,12 @@ export type Match =
       readonly target: GroupKind;
       readonly namespace: "same" | "cluster";
     }
+  /**
+   * Targets whose NAME follows a pattern the holder implies: a StatefulSet's claims are
+   * "<template>-<set>-<ordinal>", for every ordinal there is, scaled down or not. Kept from both
+   * sides like a selector, so a claim created later is linked as it arrives.
+   */
+  | { readonly type: "namePattern"; readonly patternId: string; readonly target: GroupKind }
   /** Escape hatch for refs that need code (Istio host parsing, ephemeral PVC names). Keep rare. */
   | { readonly type: "custom"; readonly extractorId: string };
 
@@ -208,6 +218,23 @@ export const K = {
   Rollout: gk("argoproj.io", "Rollout"),
   VirtualService: gk("networking.istio.io", "VirtualService"),
   IstioGateway: gk("networking.istio.io", "Gateway"),
+  DestinationRule: gk("networking.istio.io", "DestinationRule"),
+  ServiceEntry: gk("networking.istio.io", "ServiceEntry"),
+  // gitops
+  Application: gk("argoproj.io", "Application"),
+  Kustomization: gk("kustomize.toolkit.fluxcd.io", "Kustomization"),
+  HelmRelease: gk("helm.toolkit.fluxcd.io", "HelmRelease"),
+  GitRepository: gk("source.toolkit.fluxcd.io", "GitRepository"),
+  OCIRepository: gk("source.toolkit.fluxcd.io", "OCIRepository"),
+  HelmRepository: gk("source.toolkit.fluxcd.io", "HelmRepository"),
+  // api extension points
+  ValidatingWebhookConfiguration: gk("admissionregistration.k8s.io", "ValidatingWebhookConfiguration"),
+  MutatingWebhookConfiguration: gk("admissionregistration.k8s.io", "MutatingWebhookConfiguration"),
+  APIService: gk("apiregistration.k8s.io", "APIService"),
+  // dynamic resource allocation
+  ResourceClaim: gk("resource.k8s.io", "ResourceClaim"),
+  ResourceClaimTemplate: gk("resource.k8s.io", "ResourceClaimTemplate"),
+  DeviceClass: gk("resource.k8s.io", "DeviceClass"),
 } as const;
 
 /**
@@ -301,11 +328,36 @@ export const RULES: readonly Rule[] = [
   // --- workload extras ------------------------------------------------------------------------
   { id: "statefulset.governing-service", holders: [K.StatefulSet], edge: "governedBy", membership: "forward", // MISSING in original
     match: { type: "name", paths: ["spec.serviceName"], target: K.Service, namespace: "same" } },
+  // Claims from volumeClaimTemplates outlive scale-downs: every "<template>-<set>-<n>" is the set's.
+  { id: "statefulset.claims", holders: [K.StatefulSet], edge: "mounts", membership: "forward",
+    match: { type: "namePattern", patternId: "statefulset-claims", target: K.PersistentVolumeClaim } },
+  // A pod's hostname is "<hostname>.<subdomain>.<ns>.svc" only while a headless Service of that name exists.
+  { id: "podspec.subdomain", holders: POD_SPEC_HOLDERS, edge: "governedBy", membership: "forward",
+    match: { type: "name", paths: ["$podSpec.subdomain"], target: K.Service, namespace: "same" } },
+
+  // --- devices (dynamic resource allocation) --------------------------------------------------
+  { id: "podspec.resource-claim", holders: POD_SPEC_HOLDERS, edge: "claims", membership: "forward", requiresServed: true,
+    match: { type: "name", paths: ["$podSpec.resourceClaims[*].resourceClaimName"], target: K.ResourceClaim, namespace: "same" } },
+  { id: "podspec.resource-claim-template", holders: POD_SPEC_HOLDERS, edge: "claims", membership: "forward", requiresServed: true,
+    match: { type: "name", paths: ["$podSpec.resourceClaims[*].resourceClaimTemplateName"], target: K.ResourceClaimTemplate, namespace: "same" } },
+  { id: "resourceclaim.device-class", holders: [K.ResourceClaim, K.ResourceClaimTemplate], edge: "usesClass", membership: "none", hiddenByDefault: true, requiresServed: true,
+    // v1 nests the class under "exactly"; v1beta1 had it on the request; either may offer alternatives.
+    match: { type: "name", target: K.DeviceClass, namespace: "cluster", paths: [
+      "spec.devices.requests[*].exactly.deviceClassName",
+      "spec.devices.requests[*].deviceClassName",
+      "spec.devices.requests[*].firstAvailable[*].deviceClassName",
+      "spec.spec.devices.requests[*].exactly.deviceClassName",
+      "spec.spec.devices.requests[*].deviceClassName",
+      "spec.spec.devices.requests[*].firstAvailable[*].deviceClassName",
+    ] } },
 
   // --- selection (proper selector semantics; no name-in-values fallback) ----------------------
   // Service: a missing or empty selector selects nothing (manually managed endpoints).
   { id: "service.selector", holders: [K.Service], edge: "selects", membership: "backward",
     match: { type: "selector", path: "spec.selector", form: "map", empty: "none", target: K.Pod } },
+  // type ExternalName: a CNAME. When it names a Service of this cluster, it is an alias of it.
+  { id: "service.external-name", holders: [K.Service], edge: "routesTo", membership: "none", dropUnresolved: true,
+    match: { type: "custom", extractorId: "external-name-service" } },
   { id: "pdb.selector", holders: [K.PodDisruptionBudget], edge: "selects", membership: "backward", // MISSING in original
     match: { type: "selector", path: "spec.selector", form: "labelSelector", empty: "all", target: K.Pod } },
   // NetworkPolicy: {} = every pod in the namespace (default-deny). The original never matched it.
@@ -341,6 +393,14 @@ export const RULES: readonly Rule[] = [
   { id: "route.backend-service", holders: [K.HTTPRoute, K.GRPCRoute, K.TLSRoute, K.TCPRoute, K.UDPRoute], edge: "routesTo", membership: "backward", requiresServed: true,
     // Cross-namespace backendRefs are only allowed with a ReferenceGrant: draw them, flag them if ungranted.
     match: { type: "objectRef", paths: ["spec.rules[*].backendRefs[*]"], defaults: { group: "", kind: "Service", namespace: "same" } } },
+  // Gateway API for meshes (GAMMA): a route whose parent is a Service shapes the traffic sent to it.
+  { id: "route.parent-service", holders: [K.HTTPRoute, K.GRPCRoute, K.TCPRoute, K.TLSRoute], edge: "attachesTo", membership: "backward", requiresServed: true,
+    match: { type: "objectRef", paths: ["spec.parentRefs[*]"], defaults: { group: "gateway.networking.k8s.io", kind: "Gateway", namespace: "same" }, allowedTargets: [K.Service] } },
+  { id: "route.mirror-service", holders: [K.HTTPRoute, K.GRPCRoute], edge: "routesTo", membership: "none", requiresServed: true,
+    match: { type: "objectRef", defaults: { group: "", kind: "Service", namespace: "same" }, paths: [
+      "spec.rules[*].filters[*].requestMirror.backendRef",
+      "spec.rules[*].backendRefs[*].filters[*].requestMirror.backendRef",
+    ] } },
   { id: "gateway.class", holders: [K.Gateway], edge: "usesClass", membership: "none", hiddenByDefault: true, requiresServed: true,
     match: { type: "name", paths: ["spec.gatewayClassName"], target: K.GatewayClass, namespace: "cluster" } },
   { id: "gateway.tls-secret", holders: [K.Gateway], edge: "usesTls", membership: "none", requiresServed: true,
@@ -384,8 +444,10 @@ export const RULES: readonly Rule[] = [
     match: { type: "name", paths: ["spec.secretName"], target: K.Secret, namespace: "same" } },
   { id: "certmanager.certificate.issuer", holders: [K.Certificate], edge: "issuedBy", membership: "none", requiresServed: true,
     match: { type: "objectRef", paths: ["spec.issuerRef"], defaults: { group: "cert-manager.io", kind: "Issuer", namespace: "same" }, allowedTargets: [K.Issuer, K.ClusterIssuer] } },
-  { id: "certmanager.ingress-shim", holders: [K.Ingress], edge: "issuedBy", membership: "none", requiresServed: true,
+  { id: "certmanager.ingress-shim", holders: [K.Ingress, K.Gateway], edge: "issuedBy", membership: "none", requiresServed: true,
     match: { type: "annotationValue", annotation: "cert-manager.io/cluster-issuer", target: K.ClusterIssuer, namespace: "cluster" } },
+  { id: "certmanager.ingress-shim.issuer", holders: [K.Ingress, K.Gateway], edge: "issuedBy", membership: "none", requiresServed: true,
+    match: { type: "annotationValue", annotation: "cert-manager.io/issuer", target: K.Issuer, namespace: "same" } },
   { id: "externalsecret.target", holders: [K.ExternalSecret], edge: "syncsTo", membership: "backward", requiresServed: true,
     // target.name defaults to the ExternalSecret's own name: the extractor needs that default.
     match: { type: "custom", extractorId: "external-secret-target-name" } },
@@ -404,6 +466,27 @@ export const RULES: readonly Rule[] = [
   { id: "istio.virtualservice.destination", holders: [K.VirtualService], edge: "routesTo", membership: "backward", requiresServed: true,
     // hosts may be short names, "svc.ns", or FQDNs "svc.ns.svc.cluster.local": needs code.
     match: { type: "custom", extractorId: "istio-destination-hosts" } },
+  // Hosts outside the cluster (a ServiceEntry's) are not broken references: only Services are drawn.
+  { id: "istio.destinationrule.host", holders: [K.DestinationRule], edge: "configures", membership: "backward", requiresServed: true, dropUnresolved: true,
+    match: { type: "custom", extractorId: "istio-destinationrule-host" } },
+
+  // --- gitops: what applied it, and from where --------------------------------------------------
+  // Argo CD lists every resource it applied in status.resources; Flux in status.inventory.
+  { id: "argocd.application.resources", holders: [K.Application], edge: "manages", membership: "none", requiresServed: true,
+    match: { type: "custom", extractorId: "argocd-application-resources" } },
+  { id: "flux.kustomization.inventory", holders: [K.Kustomization], edge: "manages", membership: "none", requiresServed: true,
+    match: { type: "custom", extractorId: "flux-inventory" } },
+  { id: "flux.source", holders: [K.Kustomization, K.HelmRelease], edge: "readsFrom", membership: "none", requiresServed: true,
+    match: { type: "objectRef", paths: ["spec.sourceRef", "spec.chart.spec.sourceRef", "spec.chartRef"], defaults: { group: "source.toolkit.fluxcd.io", namespace: "same" } } },
+  { id: "flux.helmrelease.values", holders: [K.HelmRelease], edge: "readsFrom", membership: "none", requiresServed: true,
+    match: { type: "objectRef", paths: ["spec.valuesFrom[*]"], defaults: { group: "", namespace: "same" }, allowedTargets: [K.ConfigMap, K.Secret] } },
+
+  // --- api extension points: who answers the API server ----------------------------------------
+  // A webhook whose Service is gone fails every request it intercepts (failurePolicy: Fail).
+  { id: "webhook.service", holders: [K.ValidatingWebhookConfiguration, K.MutatingWebhookConfiguration], edge: "servedBy", membership: "backward",
+    match: { type: "objectRef", paths: ["webhooks[*].clientConfig.service"], defaults: { group: "", kind: "Service" } } },
+  { id: "apiservice.service", holders: [K.APIService], edge: "servedBy", membership: "backward",
+    match: { type: "objectRef", paths: ["spec.service"], defaults: { group: "", kind: "Service" } } },
 
   // --- inferred traffic: a Service's DNS name in a workload's env, args or config ---------------
   // Only ever resolved edges: a hostname that names no Service is not a broken reference.
@@ -432,6 +515,7 @@ export const HUBS: ReadonlyArray<{ readonly kind: GroupKind; readonly name?: str
   { kind: K.ClusterRole },
   { kind: K.ClusterIssuer },
   { kind: K.ClusterSecretStore },
+  { kind: K.DeviceClass },
 ];
 
 /**
@@ -452,6 +536,10 @@ export const CLUSTER_SCOPED: readonly GroupKind[] = [
   K.ClusterRoleBinding,
   K.ClusterIssuer,
   K.ClusterSecretStore,
+  K.ValidatingWebhookConfiguration,
+  K.MutatingWebhookConfiguration,
+  K.APIService,
+  K.DeviceClass,
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -461,7 +549,17 @@ export const CLUSTER_SCOPED: readonly GroupKind[] = [
 // ---------------------------------------------------------------------------------------------
 
 export type AppIdentitySource =
-  | { readonly source: "annotation" | "label"; readonly keys: readonly [name: string, namespace?: string]; readonly label: string }
+  | {
+      readonly source: "annotation" | "label";
+      readonly keys: readonly [name: string, namespace?: string];
+      readonly label: string;
+      /**
+       * The namespace key names where the tool's own object lives (a Flux Kustomization in
+       * flux-system), not the app: it places only cluster-scoped resources. Namespaced ones stay
+       * in their own namespace, so one Kustomization applying to ten namespaces is ten apps there.
+       */
+      readonly ownNamespaceFirst?: boolean;
+    }
   /** Helm's own release records: Secrets of type helm.sh/release.v1 labelled owner=helm, name=<release>. */
   | { readonly source: "helmReleaseSecret"; readonly label: string }
   | { readonly source: "rootOwner"; readonly label: string };
@@ -471,8 +569,8 @@ export const APP_IDENTITY: readonly AppIdentitySource[] = [
   { source: "helmReleaseSecret", label: "Helm release" },
   { source: "label", keys: ["app.kubernetes.io/instance"], label: "Instance" }, // Helm and Argo CD default tracking
   { source: "annotation", keys: ["argocd.argoproj.io/tracking-id"], label: "Argo CD application" },
-  { source: "label", keys: ["kustomize.toolkit.fluxcd.io/name", "kustomize.toolkit.fluxcd.io/namespace"], label: "Flux Kustomization" },
-  { source: "label", keys: ["helm.toolkit.fluxcd.io/name", "helm.toolkit.fluxcd.io/namespace"], label: "Flux HelmRelease" },
+  { source: "label", keys: ["kustomize.toolkit.fluxcd.io/name", "kustomize.toolkit.fluxcd.io/namespace"], label: "Flux Kustomization", ownNamespaceFirst: true },
+  { source: "label", keys: ["helm.toolkit.fluxcd.io/name", "helm.toolkit.fluxcd.io/namespace"], label: "Flux HelmRelease", ownNamespaceFirst: true },
   { source: "rootOwner", label: "Workload" }, // top of the ownerReferences chain: Deployment, StatefulSet, DaemonSet, CronJob, bare Pod, ...
 ];
 
@@ -491,6 +589,10 @@ export const ROOT_OWNER_KINDS: readonly GroupKind[] = [
   K.ReplicaSet,
   K.ReplicationController,
   K.Rollout,
+  // What applied the apps: each its own app, with lines to everything it manages.
+  K.Application,
+  K.Kustomization,
+  K.HelmRelease,
 ];
 
 /** Optional super-group shown around several apps. */

@@ -5,8 +5,9 @@ import { PlainButton, PrimaryButton } from "@k8slens/input-components";
 import { observer } from "mobx-react";
 import type React from "react";
 import type { Health } from "../graph/health";
+import { iconKeyOf } from "../graph/kind-icons";
 import type { LayoutEdge } from "../graph/layout";
-import { BODY, EDGE_INVERSE_VERBS, EDGE_VERBS, HEALTH_COLORS } from "../graph/presentation";
+import { BODY, EDGE_INVERSE_VERBS, EDGE_VERBS, HEALTH_COLORS, lookOf } from "../graph/presentation";
 import type { GraphEdge, GraphNode, GraphSnapshot } from "../graph/snapshot";
 import { INTERNET_ID } from "../graph/traffic";
 import type { ObjectKey } from "../graph/types";
@@ -93,7 +94,7 @@ const Relation = observer(
           <Span $font={{ size: "s" }} $color="textMuted">
             {verb}
           </Span>
-          {node && <KindIcon kind={node.gk.kind} />}
+          {node && <KindIcon kind={iconKeyOf(node.gk)} />}
           <Span $font={{ size: "s", bold: true, textOverflow: "ellipsis", noWrap: true }}>{node?.name ?? other}</Span>
           {edgeState !== "resolved" && <Badge small label={edgeState} $backgroundColor={edgeState === "missing" ? "critical" : "grey60"} $color="white" />}
         </Div>
@@ -159,7 +160,7 @@ const Relations = observer(({ state, node, snapshot }: { state: AppGraphViewStat
 
 const Header = ({ node, eyebrow, children }: { node: GraphNode; eyebrow: string; children?: React.ReactNode }) => (
   <Div $flex={{ gap: "s", verticalAlign: "top" }}>
-    <KindBadge kind={node.gk.kind} size={34} color={node.id === INTERNET_ID ? BODY.entry : undefined} />
+    <KindBadge kind={iconKeyOf(node.gk)} size={34} color={node.id === INTERNET_ID ? BODY.entry : lookOf(node.gk, true).color} />
     <Div $flex={{ direction: "vertical", gap: "xxs" }} $flexChild>
       <Span $font={{ size: "xs", uppercase: true }} $color="textMuted">
         {eyebrow}
@@ -294,7 +295,7 @@ const AppDetails = observer(({ state, id, snapshot }: { state: AppGraphViewState
                 $cursor="pointer"
               >
                 <Dot health={node.health} />
-                <KindIcon kind={node.gk.kind} />
+                <KindIcon kind={iconKeyOf(node.gk)} />
                 <Span $font={{ size: "s", noWrap: true, textOverflow: "ellipsis" }}>{node.name}</Span>
                 {node.summary && (
                   <Span $font={{ size: "xs", noWrap: true }} $color="textMuted">

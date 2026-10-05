@@ -53,7 +53,7 @@ import { GLYPH_FOOTPRINT, type Layout, type LayoutEdge, type LayoutNode } from "
 import { type Glyph, HEALTH_COLORS, PALETTE, POD_BODY } from "../graph/presentation";
 import type { ObjectKey } from "../graph/types";
 import type { CameraMemory, Selection } from "../ui/view-state.injectable";
-import { iconIndexOf } from "../graph/kind-icons";
+import { iconIndexOf, iconKeyOf } from "../graph/kind-icons";
 import { createGhostGeometry, createGlyphGeometry, GLYPHS } from "./glyphs";
 import { createIconAtlas, createIconMaterial } from "./icon-atlas";
 import { type LabelItem, LabelLayer } from "./labels";
@@ -659,7 +659,7 @@ export class AppGraphScene {
     const iconCells = this.icons.attribute("aIcon");
 
     for (const record of this.records.values()) {
-      iconCells.setX(record.icon!, iconIndexOf(record.node.node.gk.kind));
+      iconCells.setX(record.icon!, iconIndexOf(iconKeyOf(record.node.node.gk)));
     }
 
     iconCells.needsUpdate = true;
@@ -1696,7 +1696,7 @@ export class AppGraphScene {
         y: this.baseOf(node) + node.y + (footprint.h * node.heightScale) / 2 + 0.28,
         z: node.z,
         text: node.node.name,
-        kind: node.node.gk.kind,
+        kind: iconKeyOf(node.node.gk),
         sub: hot.has(node.id) ? [node.node.state === "present" ? node.node.gk.kind : `${node.node.gk.kind} (${node.node.state})`, summary].filter(Boolean).join(" · ") : undefined,
         variant: "node",
         priority,

@@ -10,6 +10,8 @@ See every app in your cluster as a live 3D model: which resources make up each a
 - **Resources** are Kubernetes-style heptagon tokens with their kind's icon on top: the cube of a pod, the cycle of a Deployment, the padlock of a Secret. They stand inside their app in the order a request meets them, left to right: ingresses and gateway routes, services, workloads, pods, then the ConfigMaps, Secrets, volumes and ServiceAccounts they use. Autoscalers, disruption budgets and network policies float over what they act on.
 - **Health** is colour. Pods glow green, amber or red, workloads carry a status light, and apps take the colour of their worst resource. Something broken sends a pulse along the floor, and an app with a broken resource sends up a red beacon you can see from across the cluster.
 - **Broken references** show as red wireframes: a pod mounting a Secret that does not exist, an Ingress pointing at a missing Service. References into resources you are not allowed to list show as grey wireframes marked unknown, never as missing.
+- **Operators and GitOps.** A custom resource that owns pods or Services is listed and anchors its app: a database cluster stands at the head of its pods and Services. Argo CD Applications and Flux Kustomizations and HelmReleases are apps of their own, showing sync and health, with a line to everything they applied.
+- **API extension points.** Admission webhooks and aggregated APIs are linked to the Service that answers them. If that Service is gone, every request the webhook intercepts can fail, so the link shows as broken.
 - **Shared resources**, such as a ConfigMap two apps mount, stay outside both apps as context. The ones every app uses, like the `default` ServiceAccount and `kube-root-ca.crt`, are hidden unless you ask for them.
 
 ## Traffic Graph
@@ -17,7 +19,8 @@ See every app in your cluster as a live 3D model: which resources make up each a
 A simpler picture of the whole cluster at once: only what is in the path of a request, one lane per namespace, flowing left to right. From the internet to your ingresses, gateways and LoadBalancer Services, through routes to Services, from each Service to the workload behind it, and from workloads to the Services they call. Packets travel every connection. A namespace with many routes wraps into a block instead of one long column.
 
 - **Ingress, Gateway API and Istio.** Traffic enters through Ingresses, Gateway API Gateways and their routes, and Istio Gateways with the VirtualServices bound to them (`spec.gateways`). A VirtualService bound only to `mesh` shapes traffic between sidecars, so it is not drawn as a hop. A shared gateway, such as one in `istio-system`, stays in view when you choose only the namespaces it leads into.
-- **Measured traffic from a service mesh.** If the cluster runs Istio or Linkerd and Lens has Prometheus set up for it, the graph draws the calls the mesh measured over the last 5 minutes: green while they succeed, amber from 1% failing, red from 5%. Packets run denser and faster on busier connections, and the side panel shows the rate, for example `Istio saw 12 req/s · 3% errors`. Traffic leaving an ingress gateway is drawn on the routes it took. Prometheus is asked every 30 seconds, and only while a Traffic Graph is open.
+- **Measured traffic from a service mesh.** If the cluster runs Istio or Linkerd and Lens has Prometheus set up for it, the graph draws the calls the mesh measured over the last 5 minutes: green while they succeed, amber from 1% failing, red from 5%. Packets run denser and faster on busier connections, and the side panel shows the rate, for example `Istio saw 12 req/s · 3% errors`. Traffic leaving an ingress gateway is drawn on the routes it took, and traffic to a host outside the cluster ends at the ServiceEntry that declares it. Prometheus is asked every 30 seconds, and only while a Traffic Graph is open.
+- **Mesh routing.** Gateway API routes attached to a Service, rather than a Gateway, sit between that Service and the backends they split or mirror traffic to. An ExternalName Service that names another Service in the cluster leads to it.
 - **Inferred calls.** Without a mesh, calls between services are inferred from where a workload says it will connect: a Service's DNS name in its environment variables, arguments, or the ConfigMaps it uses (`http://orders:8080`, `redis.cache.svc.cluster.local`, `DB_HOST=postgres`). Only names that match an existing Service are drawn; Secrets are never read for this.
 
 Everything updates live as the cluster changes. The graph reads what Lens already watches and never queries the cluster per relationship.
@@ -51,7 +54,13 @@ Everything updates live as the cluster changes. The graph reads what Lens alread
 - On shared clusters where you cannot list a kind cluster-wide, App Graph lists it namespace by namespace instead, and marks references it still cannot see as unknown.
 - Secret values are never kept: the graph drops `data` and `stringData` as soon as a Secret arrives.
 - Rendering pauses whenever the tab is hidden, and the ambient animation slows down, then stops, when you leave the view alone.
-- Custom resources from Gateway API, cert-manager, External Secrets, Prometheus Operator, KEDA, Argo Rollouts, Istio (VirtualServices and Gateways) and the Vertical Pod Autoscaler are included when the cluster serves them.
+- Custom resources are included when the cluster serves them, from:
+  - Gateway API, cert-manager, External Secrets, Prometheus Operator, KEDA;
+  - Argo CD and Argo Rollouts, and Flux (Kustomizations, HelmReleases and their sources);
+  - Istio (VirtualServices, Gateways, DestinationRules, ServiceEntries);
+  - the Vertical Pod Autoscaler and dynamic resource allocation (device claims).
+
+  Any other custom resource that owns something in the graph is listed as well, up to 24 kinds.
 - Measured traffic reads `istio_requests_total` and `istio_tcp_*_bytes_total` (Istio), or `response_total` and `tcp_*_bytes_total` (Linkerd), through the Prometheus configured in the cluster's settings. The status line says when there is no Prometheus or no mesh traffic.
 
 What changed in each version is in [CHANGELOG.md](./CHANGELOG.md).

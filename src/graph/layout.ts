@@ -150,7 +150,7 @@ const DISTRICT_GRID = 4;
 
 const snapUp = (value: number, grid: number) => Math.ceil(value / grid - 1e-6) * grid;
 
-const TEMPLATE_EDGES: ReadonlySet<EdgeType> = new Set<EdgeType>(["mounts", "readsEnvFrom", "pullsWith", "runsAs", "usesClass", "calls"]);
+const TEMPLATE_EDGES: ReadonlySet<EdgeType> = new Set<EdgeType>(["mounts", "readsEnvFrom", "pullsWith", "runsAs", "usesClass", "calls", "governedBy", "claims"]);
 
 const isOwnerKind = (snapshot: GraphSnapshot, id: ObjectKey) =>
   (snapshot.into.get(id) ?? []).some((edge) => edge.type === "ownedBy");

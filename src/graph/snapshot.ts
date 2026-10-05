@@ -81,6 +81,10 @@ const isHub = (gk: GroupKind, name: string) => HUBS.some((hub) => sameGroupKind(
 
 const isRootOwnerKind = (gk: GroupKind) => ROOT_OWNER_KINDS.some((kind) => sameGroupKind(kind, gk));
 
+/** Kinds the rules know what they are; an owner of any other kind is someone's operator resource. */
+const KNOWN_KINDS: readonly GroupKind[] = Object.values(K);
+const isKnownKind = (gk: GroupKind) => KNOWN_KINDS.some((kind) => sameGroupKind(kind, gk));
+
 /** The first APP_IDENTITY entry that names an app for this object from its own labels and annotations. */
 export const explicitIdentityOf = (object: KubeObject, namespace: string): Identity | undefined => {
   const labels = object.metadata.labels ?? {};
@@ -102,7 +106,9 @@ export const explicitIdentityOf = (object: KubeObject, namespace: string): Ident
           name = name.split(":")[0] ?? name;
         }
 
-        return { name, namespace: (namespaceKey && values[namespaceKey]) || namespace, source: entry.label };
+        const named = namespaceKey ? values[namespaceKey] : undefined;
+
+        return { name, namespace: entry.ownNamespaceFirst ? namespace || named || "" : named || namespace, source: entry.label };
       }
 
       case "helmReleaseSecret": {
@@ -331,8 +337,11 @@ export const buildSnapshot = (store: GraphStore): GraphSnapshot => {
     if (!inherited) {
       const root = nodes.get(current);
 
-      if (root && (isRootOwnerKind(root.gk) || root.state === "unknown")) {
-        inherited = { name: root.name, namespace: node.namespace || root.namespace, source: root.state === "unknown" ? `${root.gk.kind} owner` : "Workload" };
+      // An operator's resource (listed, or only seen as an owner) anchors what it owns.
+      const isOperatorResource = root !== undefined && root.id !== node.id && (root.state === "unknown" || !isKnownKind(root.gk));
+
+      if (root && (isRootOwnerKind(root.gk) || isOperatorResource)) {
+        inherited = { name: root.name, namespace: node.namespace || root.namespace, source: isOperatorResource ? `${root.gk.kind} owner` : "Workload" };
       }
     }
 
