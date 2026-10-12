@@ -1,5 +1,5 @@
 {
-  "name": "@skoncar/lens-app-graph",
+  "name": "lens-app-graph",
   "version": "0.2.0",
   "description": "App Graph: every app in your cluster as a live 3D map. See how it's wired, what's broken, and where its traffic flows.",
   "license": "MIT",
