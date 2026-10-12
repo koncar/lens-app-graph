@@ -4,6 +4,7 @@ What changed in each version of this extension, newest first.
 
 ## 0.2.0
 
+- A new icon and banner, and a README with a demo and screenshots of both views.
 - Operators' resources stand in the graph as themselves. A custom resource that owns pods or Services is listed too, with its name, health and details, and anchors the app it owns. Examples: a CloudNativePG `Cluster`, a Strimzi `Kafka`.
 - Argo CD Applications and Flux Kustomizations and HelmReleases appear as apps of their own, with their sync and health and a line to everything they applied. Flux sources and `valuesFrom` are linked too.
 - Admission webhooks and aggregated APIs are linked to the Service that answers them. One whose Service is gone shows as broken, and an APIService that is not available turns red.

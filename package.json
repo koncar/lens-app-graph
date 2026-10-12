@@ -1,7 +1,7 @@
 {
   "name": "@skoncar/lens-app-graph",
   "version": "0.2.0",
-  "description": "See every app in your cluster in 3D: how its resources connect, what is broken, and where traffic flows, live.",
+  "description": "App Graph: every app in your cluster as a live 3D map. See how it's wired, what's broken, and where its traffic flows.",
   "license": "MIT",
   "author": "skoncar",
   "repository": {
@@ -15,10 +15,18 @@
   "keywords": [
     "lens-extension",
     "kubernetes",
-    "topology",
-    "graph",
     "3d",
-    "visualization"
+    "visualization",
+    "topology",
+    "dependency-graph",
+    "service-map",
+    "traffic",
+    "istio",
+    "linkerd",
+    "service-mesh",
+    "argocd",
+    "flux",
+    "gitops"
   ],
   "type": "commonjs",
   "main": "./dist/index.js",
@@ -30,7 +38,7 @@
   ],
   "lensExtension": {
     "icon": "assets/icon.svg",
-    "banner": "assets/banner.png"
+    "banner": "assets/banner.webp"
   },
   "scripts": {
     "build": "lens-css-module-types src && lens-types-check && lens-package-build --entry-point ./src/index.ts",
