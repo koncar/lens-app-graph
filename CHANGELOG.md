@@ -2,6 +2,10 @@
 
 What changed in each version of this extension, newest first.
 
+## 0.2.1
+
+- The banner, description and README now introduce the Traffic Graph alongside the App Graph.
+
 ## 0.2.0
 
 - Published as `lens-app-graph`. It replaces `@skoncar/lens-app-graph`, which gets no further updates.

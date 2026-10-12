@@ -1,7 +1,7 @@
 {
   "name": "lens-app-graph",
-  "version": "0.2.0",
-  "description": "App Graph: every app in your cluster as a live 3D map. See how it's wired, what's broken, and where its traffic flows.",
+  "version": "0.2.1",
+  "description": "App Graph & Traffic Graph: every app in your cluster as a live 3D map, and every path its traffic takes. See what's broken at a glance.",
   "license": "MIT",
   "author": "skoncar",
   "repository": {
