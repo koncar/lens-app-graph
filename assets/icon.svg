@@ -1,8 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- An app on its platform: three resources and the links between them. -->
-  <path d="M32 38 L60 51 L32 63 L4 51 Z" fill="#1aa7d6" fill-opacity="0.35" stroke="#1aa7d6" stroke-width="4" stroke-linejoin="round"/>
-  <path d="M32 12 L13 33 L51 33 Z" stroke="#1aa7d6" stroke-width="5" stroke-linejoin="round" fill="none"/>
-  <circle cx="32" cy="12" r="10" fill="#e8875f"/>
-  <circle cx="13" cy="33" r="9" fill="#1aa7d6"/>
-  <circle cx="51" cy="33" r="9" fill="#2fbf71"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b7bff"/>
+      <stop offset="1" stop-color="#14b8d9"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#g)"/>
+  <path d="M32 19 L17.5 43 M32 19 L46.5 43 M17.5 43 H46.5" stroke="#fff" stroke-width="4.2" stroke-linecap="round" fill="none" opacity=".9"/>
+  <polygon points="32.00,9.00 39.43,12.58 41.26,20.61 36.12,27.06 27.88,27.06 22.74,20.61 24.57,12.58" fill="#fff"/>
+  <polygon points="17.50,34.00 24.93,37.58 26.76,45.61 21.62,52.06 13.38,52.06 8.24,45.61 10.07,37.58" fill="#fff"/>
+  <polygon points="46.50,34.00 53.93,37.58 55.76,45.61 50.62,52.06 42.38,52.06 37.24,45.61 39.07,37.58" fill="#fff"/>
 </svg>
