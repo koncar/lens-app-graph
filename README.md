@@ -1,6 +1,6 @@
-# App Graph
+# App Graph & Traffic Graph
 
-Every app in your Kubernetes cluster, wired up and alive in 3D, right inside Lens. See how each app is built, what is broken, and where its traffic flows.
+Two live 3D views of your Kubernetes cluster, right inside Lens. The **App Graph** shows every app, how it is built and what is broken. The **Traffic Graph** shows every path a request takes, from the internet to the Services behind it, with real request rates when you run a service mesh.
 
 ![App Graph in action: namespaces as plates, apps as glass modules, traffic flowing between them, and a red beacon over a broken app](https://raw.githubusercontent.com/koncar/lens-app-graph/main/docs/demo.webp)
 
@@ -28,7 +28,7 @@ Every app in your Kubernetes cluster, wired up and alive in 3D, right inside Len
 
 ## Install
 
-[Open App Graph in Lens](https://app.k8slens.dev/lens-launcher?c=lens%3A%2F%2Fapp%2Fopen%2Fextension%3Fname%3D@skoncar/lens-app-graph) and click Install there. The link offers Lens for download when it is not installed yet.
+[Open App Graph in Lens](https://app.k8slens.dev/lens-launcher?c=lens%3A%2F%2Fapp%2Fopen%2Fextension%3Fname%3Dlens-app-graph) and click Install there. The link offers Lens for download when it is not installed yet.
 
 ## Usage
 
