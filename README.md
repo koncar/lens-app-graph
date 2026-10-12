@@ -28,7 +28,7 @@ Every app in your Kubernetes cluster, wired up and alive in 3D, right inside Len
 
 ## Install
 
-[Open App Graph in Lens](https://app.k8slens.dev/lens-launcher?c=lens%3A%2F%2Fapp%2Fopen%2Fextension%3Fname%3D@skoncar/lens-app-graph) and click Install there. The link offers Lens for download when it is not installed yet.
+[Open App Graph in Lens](https://app.k8slens.dev/lens-launcher?c=lens%3A%2F%2Fapp%2Fopen%2Fextension%3Fname%3Dlens-app-graph) and click Install there. The link offers Lens for download when it is not installed yet.
 
 ## Usage
 
